@@ -459,11 +459,47 @@
     const MODEL_URL='https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights/';
     let tinyOpts=null,detecting=false;
 
-    function mapToEmotion(e){
-      if(e.happy>0.65&&e.surprised>0.15)return'excited';
-      if(e.neutral>0.80)return'calm';
-      if(e.fearful>0.20&&e.disgusted>0.12)return'anxious';
-      return Object.entries(e).reduce((a,b)=>a[1]>b[1]?a:b)[0];
+    // Blend all emotion presets weighted by raw expression probabilities.
+    // Mild expressions produce partial states; mixed faces blend multiple presets.
+    function applyExpressions(e){
+      // Derive compound emotions from co-occurring base scores, then
+      // redistribute so calm and excited/anxious can dominate when appropriate.
+      const w={
+        happy:     e.happy,
+        sad:       e.sad,
+        angry:     e.angry,
+        fearful:   e.fearful,
+        surprised: e.surprised,
+        disgusted: e.disgusted,
+        // sustained neutrality → calm; dampen raw neutral so calm can win
+        neutral:   e.neutral>0.60 ? e.neutral*0.35 : e.neutral,
+        excited:   Math.min(e.happy,e.surprised)*2.2,
+        anxious:   Math.min(e.fearful,e.disgusted)*2.2,
+        calm:      e.neutral>0.60 ? (e.neutral-0.60)*3.0 : 0,
+      };
+
+      const active=Object.entries(w).filter(([k,v])=>v>0.07&&EMOTIONS[k]);
+      if(!active.length)return;
+      const total=active.reduce((s,[,v])=>s+v,0);
+
+      const blend={colorA:[0,0,0],colorB:[0,0,0],colorC:[0,0,0],speed:0,scale:0,pulse:0,depth:0};
+      for(const [key,weight] of active){
+        const n=weight/total, em=EMOTIONS[key];
+        blend.colorA=blend.colorA.map((v,i)=>v+em.colorA[i]*n);
+        blend.colorB=blend.colorB.map((v,i)=>v+em.colorB[i]*n);
+        blend.colorC=blend.colorC.map((v,i)=>v+em.colorC[i]*n);
+        blend.speed +=em.speed *n; blend.scale+=em.scale*n;
+        blend.pulse +=em.pulse *n; blend.depth+=em.depth*n;
+      }
+      tgt=blend;
+
+      // Wave/flash only when the dominant emotion label actually changes
+      const dominant=active.reduce((a,b)=>a[1]>b[1]?a:b)[0];
+      if(dominant!==lastEmotion){
+        uniforms.uWave.value=0.0;
+        if(blend.pulse>0.75)uniforms.uFlash.value=1.0;
+        lastEmotion=dominant;
+      }
     }
 
     async function runDetection(){
@@ -475,7 +511,7 @@
           const b=r.detection.box;
           trackTargetX=(1-(b.x+b.width/2)/video.videoWidth)*2-1;
           trackTargetY=((b.y+b.height/2)/video.videoHeight*2-1)*0.7;
-          transitionTo(mapToEmotion(r.expressions));
+          applyExpressions(r.expressions);
         }else{
           trackTargetX*=0.96;
           trackTargetY*=0.96;
