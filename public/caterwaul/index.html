@@ -128,7 +128,7 @@ const SILENCE_GAP_MS = 600;    // ms of quiet that marks end of clip
 const MIN_CLIP_SEC   = 0.55;   // clips shorter than this are discarded (cat meows rarely shorter)
 const MAX_CLIP_SEC   = 5.0;    // hard cap on clip length
 const RESAMPLE_SR    = 16000;  // target sample rate for Gemini (WAV)
-const MIN_CONFIDENCE = 0.80;   // Gemini confidence below this is ignored
+const MIN_CONFIDENCE = 0.90;   // Gemini confidence below this is ignored
 
 // ── State ──────────────────────────────────────────────────────────────────
 let analyser    = null;
