@@ -188,15 +188,17 @@ app.post("/api/caterwaul", catLimiter, async (req, res) => {
 
     const result = await catModel.generateContent([
       { inlineData: { mimeType: "audio/wav", data: audio } },
-      `You are an expert in cat vocalisation science, familiar with the research of Susanne Schötz (2013, 2016), John Bradshaw (2013), Karen McComb et al. (2009), and Mildred Moelk (1944).
+      `You are an expert in cat vocalisation science. Your only job is to determine whether this audio contains a genuine domestic cat vocalisation.
 
-Listen carefully to this audio clip. Be strict: only identify genuine cat vocalisations — not human speech, music, background noise, other animals, or silence.
+Rules — apply them strictly:
+- Return {"sound":"none"} for ANYTHING that is not unambiguously a cat: human speech, music, TV, traffic, wind, footsteps, doors, taps, typing, other animals, silence, or any sound you are uncertain about.
+- When in doubt, return {"sound":"none"}. Err heavily toward "none".
+- Only return a cat sound if you are highly certain (≥ 80%) it is a real cat vocalisation.
 
-If a cat vocalisation IS present, return this JSON:
-{"sound":"meow"|"purr"|"hiss"|"caterwaul"|"chirp"|"general","meaning":"plain English meaning in a short phrase","science":"one sentence of scientific context with author citation","confidence":0.0-1.0}
+If and only if you hear an unambiguous cat vocalisation, return:
+{"sound":"meow"|"purr"|"hiss"|"caterwaul"|"chirp"|"general","meaning":"plain English meaning in a short phrase","science":"one sentence with author citation (Schötz 2013/2016, Bradshaw 2013, McComb 2009, or Moelk 1944)","confidence":0.0-1.0}
 
-If no cat vocalisation is present, return exactly:
-{"sound":"none"}
+Otherwise return exactly: {"sound":"none"}
 
 Return only valid JSON, no other text.`
     ]);

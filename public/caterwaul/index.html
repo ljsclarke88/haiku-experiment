@@ -122,12 +122,13 @@
 'use strict';
 
 // ── Constants ─────────────────────────────────────────────────────────────
-const ONSET_THRESH   = 0.022;  // RMS energy level that marks sound onset
+const ONSET_THRESH   = 0.055;  // RMS energy level that marks sound onset
 const PRE_BUF_SEC    = 0.35;   // seconds of audio kept before onset
-const SILENCE_GAP_MS = 500;    // ms of quiet that marks end of clip
-const MIN_CLIP_SEC   = 0.30;   // clips shorter than this are discarded
+const SILENCE_GAP_MS = 600;    // ms of quiet that marks end of clip
+const MIN_CLIP_SEC   = 0.55;   // clips shorter than this are discarded (cat meows rarely shorter)
 const MAX_CLIP_SEC   = 5.0;    // hard cap on clip length
 const RESAMPLE_SR    = 16000;  // target sample rate for Gemini (WAV)
+const MIN_CONFIDENCE = 0.80;   // Gemini confidence below this is ignored
 
 // ── State ──────────────────────────────────────────────────────────────────
 let analyser    = null;
@@ -280,7 +281,7 @@ async function translateClip(clipNative) {
     });
     const data = await res.json();
 
-    if (data.sound && data.sound !== 'none') {
+    if (data.sound && data.sound !== 'none' && (data.confidence ?? 0) >= MIN_CONFIDENCE) {
       showAndSpeak(data.sound, data.meaning, data.science, data.confidence);
     } else {
       setStatus('listening for your cat');
