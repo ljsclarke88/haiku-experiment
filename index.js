@@ -168,6 +168,53 @@ app.post("/api/ambulant/scene", ambulantLimiter, async (req, res) => {
   }
 });
 
+// ── caterwaul ─────────────────────────────────────────────────────────────────
+const catLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many requests — please wait a moment" },
+});
+
+const catModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+app.post("/api/caterwaul", catLimiter, async (req, res) => {
+  try {
+    const { audio } = req.body;
+    if (!audio || typeof audio !== 'string' || audio.length > 1_500_000) {
+      return res.status(400).json({ error: "invalid" });
+    }
+
+    const result = await catModel.generateContent([
+      { inlineData: { mimeType: "audio/wav", data: audio } },
+      `You are an expert in cat vocalisation science, familiar with the research of Susanne Schötz (2013, 2016), John Bradshaw (2013), Karen McComb et al. (2009), and Mildred Moelk (1944).
+
+Listen carefully to this audio clip. Be strict: only identify genuine cat vocalisations — not human speech, music, background noise, other animals, or silence.
+
+If a cat vocalisation IS present, return this JSON:
+{"sound":"meow"|"purr"|"hiss"|"caterwaul"|"chirp"|"general","meaning":"plain English meaning in a short phrase","science":"one sentence of scientific context with author citation","confidence":0.0-1.0}
+
+If no cat vocalisation is present, return exactly:
+{"sound":"none"}
+
+Return only valid JSON, no other text.`
+    ]);
+
+    const text  = result.response.text().trim();
+    const match = text.match(/\{[\s\S]*?\}/);
+    if (!match) return res.json({ sound: "none" });
+    try {
+      res.json(JSON.parse(match[0]));
+    } catch {
+      res.json({ sound: "none" });
+    }
+  } catch (err) {
+    console.error("/api/caterwaul:", err.message);
+    res.status(500).json({ sound: "none" });
+  }
+});
+
 if (process.env.NODE_ENV !== 'production') {
   app.listen(port, () => {
     console.log(`Haiku app listening at http://localhost:${port}`);

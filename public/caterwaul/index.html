@@ -25,7 +25,6 @@
     }
     #back:hover { color: rgba(200,194,184,0.9); }
 
-    /* ── state system ── */
     .state {
       position: fixed; inset: 0;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -57,8 +56,6 @@
     #begin-btn:hover { border-color: rgba(200,194,184,0.65); color: #e8e2da; }
 
     /* ── listening ── */
-    #s-listen { justify-content: center; gap: 0; }
-
     #viz {
       display: block;
       width: min(600px, 88vw);
@@ -103,14 +100,12 @@
 
 <a href="/" id="back">← Lab</a>
 
-<!-- Intro — shown before microphone permission is granted -->
 <div id="s-intro" class="state active">
   <h1>Caterwaul</h1>
   <p class="sub">a realtime cat translator...maybe</p>
   <button id="begin-btn">begin listening</button>
 </div>
 
-<!-- Listening — shown once mic is live -->
 <div id="s-listen" class="state">
   <canvas id="viz"></canvas>
   <div id="out">
@@ -121,71 +116,29 @@
   </div>
 </div>
 
-<div id="status" class="pulse">loading…</div>
+<div id="status" class="pulse">ready</div>
 
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
 <script>
 'use strict';
 
-// ── Cat vocalisation science ────────────────────────────────────────────────
-// Sources: Schötz (2013, 2016), McComb et al. (2009), Bradshaw (2013),
-//          Moelk (1944 — first systematic phonetic classification of cat sounds).
-const TRANSLATIONS = {
-  Cat: {
-    label:   'vocalisation',
-    meaning: 'I am here',
-    science: 'A general cat sound. Intent depends on pitch, duration and context — watch body language for further cues. (Moelk, 1944)',
-  },
-  Purr: {
-    label:   'purr',
-    meaning: 'I feel safe',
-    science: 'Cats purr at 25–150 Hz. A self-soothing signal also used to solicit care. The solicitation purr embeds a higher-frequency cry that humans find hard to ignore. (McComb et al., 2009)',
-  },
-  Meow: {
-    label:   'meow',
-    meaning: 'I need something',
-    science: 'Adult cats rarely meow at each other — this sound evolved almost exclusively to communicate with humans. Pitch and duration carry the specific demand. (Bradshaw, 2013)',
-  },
-  Hiss: {
-    label:   'hiss',
-    meaning: 'Back away',
-    science: 'A defensive warning thought to mimic snake sounds. The cat feels cornered — this is a final caution before escalation.',
-  },
-  Caterwaul: {
-    label:   'caterwaul',
-    meaning: 'Stay away from me',
-    science: 'Used in territorial disputes, mating calls, or intense distress. Females caterwaul during estrus. One of the oldest and most primal cat vocalisations. (Schötz, 2016)',
-  },
-  Chirp: {
-    label:   'chirp / trill',
-    meaning: 'Come here',
-    science: 'A short rising trill used by mothers to call kittens, and by cats greeting familiar humans. A sign of friendly intent and excitement. (Schötz, 2013)',
-  },
-};
-
 // ── Constants ─────────────────────────────────────────────────────────────
-const KEYWORDS       = ['Caterwaul', 'Purr', 'Meow', 'Hiss', 'Chirp', 'Cat'];
-const CAT_THRESHOLD  = 0.85;   // ~90% certainty — only confident cat detections
-const TARGET_SR      = 16000;
-const FRAME_LEN      = 15600;  // 0.975 s at 16 kHz — YAMNet's native window
-const ONSET_THRESH   = 0.022;  // RMS energy to detect sound onset
-const PRE_BUF_SEC    = 0.35;   // seconds of audio to keep before onset
-const SILENCE_GAP_MS = 500;    // ms of quiet that marks end of a clip
+const ONSET_THRESH   = 0.022;  // RMS energy level that marks sound onset
+const PRE_BUF_SEC    = 0.35;   // seconds of audio kept before onset
+const SILENCE_GAP_MS = 500;    // ms of quiet that marks end of clip
 const MIN_CLIP_SEC   = 0.30;   // clips shorter than this are discarded
 const MAX_CLIP_SEC   = 5.0;    // hard cap on clip length
+const RESAMPLE_SR    = 16000;  // target sample rate for Gemini (WAV)
 
 // ── State ──────────────────────────────────────────────────────────────────
-let model = null, catIndices = [], modelReady = false;
-let classifying = false, fadeTimer = null;
-let analyser = null;
-let waveHue  = 0;
-
-// Clip capture state
+let analyser    = null;
 let nativeSR    = 44100;
 let isRecording = false;
 let clipBuffer  = [];
 let preBuffer   = [];
 let silenceTimer = null;
+let busy        = false;
+let fadeTimer   = null;
+let waveHue     = 0;
 
 // ── DOM ────────────────────────────────────────────────────────────────────
 const sIntro   = document.getElementById('s-intro');
@@ -198,7 +151,7 @@ const outSci   = document.getElementById('out-science');
 const confFill = document.getElementById('conf-fill');
 const canvas   = document.getElementById('viz');
 
-function show(el) {
+function showState(el) {
   document.querySelectorAll('.state').forEach(s => s.classList.remove('active'));
   el.classList.add('active');
 }
@@ -217,12 +170,11 @@ resizeCanvas();
 window.addEventListener('resize', resizeCanvas);
 
 // ── Waveform ───────────────────────────────────────────────────────────────
-function drawViz() {
+(function drawViz() {
   requestAnimationFrame(drawViz);
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
-
   if (!analyser) return;
 
   const buf = new Float32Array(analyser.frequencyBinCount);
@@ -231,42 +183,64 @@ function drawViz() {
   waveHue += (outDiv.classList.contains('on') ? 1 : -1) * 0.04;
   waveHue  = Math.max(0, Math.min(1, waveHue));
 
-  const a = 0.28 + waveHue * 0.55;
+  const a  = 0.28 + waveHue * 0.55;
   const cr = Math.round(158 + waveHue * 57);
   const cg = Math.round(150 + waveHue * 14);
   const cb = Math.round(140 - waveHue * 54);
   ctx.strokeStyle = `rgba(${cr},${cg},${cb},${a})`;
   ctx.lineWidth   = (1.2 + waveHue * 0.9) * (devicePixelRatio || 1);
   ctx.lineJoin    = 'round';
-
   ctx.beginPath();
   const step = W / (buf.length - 1);
   for (let i = 0; i < buf.length; i++) {
-    const x = i * step;
-    const y = (buf[i] * 0.65 + 0.5) * H;
+    const x = i * step, y = (buf[i] * 0.65 + 0.5) * H;
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
   ctx.stroke();
+}());
+
+// ── WAV encoding ───────────────────────────────────────────────────────────
+// Encodes a Float32Array to a 16-bit mono WAV ArrayBuffer.
+function encodeWAV(f32, sr) {
+  const len  = f32.length;
+  const buf  = new ArrayBuffer(44 + len * 2);
+  const view = new DataView(buf);
+  const ws   = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); view.setUint32(4, 36 + len * 2, true);
+  ws(8, 'WAVE'); ws(12, 'fmt '); view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, sr, true); view.setUint32(28, sr * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  ws(36, 'data'); view.setUint32(40, len * 2, true);
+  let o = 44;
+  for (let i = 0; i < len; i++) {
+    const s = Math.max(-1, Math.min(1, f32[i]));
+    view.setInt16(o, s < 0 ? s * 32768 : s * 32767, true); o += 2;
+  }
+  return buf;
 }
-drawViz();
+
+function bufToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+  return btoa(out);
+}
 
 // ── Show translation + speak ──────────────────────────────────────────────
-function showAndSpeak(keyword, score) {
-  const t = TRANSLATIONS[keyword] || TRANSLATIONS.Cat;
-  outLabel.textContent = t.label;
-  outMean.textContent  = `"${t.meaning}"`;
-  outSci.textContent   = t.science;
-  confFill.style.width = Math.round(score * 100) + '%';
+function showAndSpeak(sound, meaning, science, confidence) {
+  outLabel.textContent = sound;
+  outMean.textContent  = `"${meaning}"`;
+  outSci.textContent   = science;
+  confFill.style.width = Math.round((confidence || 0) * 100) + '%';
   outDiv.classList.add('on');
   setStatus('cat detected', false);
 
-  // Speak the meaning after the visual fades in
   setTimeout(() => {
     window.speechSynthesis.cancel();
-    const utt   = new SpeechSynthesisUtterance(t.meaning);
-    utt.lang    = 'en-GB';
-    utt.rate    = 0.88;
-    utt.pitch   = 1.0;
+    const utt  = new SpeechSynthesisUtterance(meaning);
+    utt.lang   = 'en-GB';
+    utt.rate   = 0.88;
     window.speechSynthesis.speak(utt);
   }, 700);
 
@@ -277,64 +251,46 @@ function showAndSpeak(keyword, score) {
   }, 7000);
 }
 
-// ── Classify a complete clip ──────────────────────────────────────────────
-// Resamples the raw native-rate clip to 16 kHz via OfflineAudioContext,
-// then runs YAMNet on overlapping 0.975 s windows. Only translates if the
-// highest cat-class score across all windows reaches CAT_THRESHOLD.
-async function classifyClip(clip, sourceSR) {
-  if (classifying || !model) return;
-  classifying = true;
+// ── Send clip to Gemini via backend ───────────────────────────────────────
+async function translateClip(clipNative) {
+  if (busy) return;
+  busy = true;
   setStatus('translating…', false);
 
   try {
-    // Resample to 16 kHz
-    const targetLen = Math.ceil(clip.length * TARGET_SR / sourceSR);
-    const offCtx    = new OfflineAudioContext(1, targetLen, TARGET_SR);
-    const buf       = offCtx.createBuffer(1, clip.length, sourceSR);
-    buf.copyToChannel(clip, 0);
-    const src       = offCtx.createBufferSource();
+    // Resample native-rate clip to 16 kHz
+    const targetLen = Math.ceil(clipNative.length * RESAMPLE_SR / nativeSR);
+    const offCtx    = new OfflineAudioContext(1, targetLen, RESAMPLE_SR);
+    const buf       = offCtx.createBuffer(1, clipNative.length, nativeSR);
+    buf.copyToChannel(clipNative, 0);
+    const src = offCtx.createBufferSource();
     src.buffer = buf; src.connect(offCtx.destination); src.start(0);
-    const rendered  = await offCtx.startRendering();
-    const s16       = rendered.getChannelData(0);
+    const rendered = await offCtx.startRendering();
+    const s16k     = rendered.getChannelData(0);
 
-    // Pad to at least one full YAMNet frame
-    const padded = s16.length >= FRAME_LEN ? s16 : (() => {
-      const p = new Float32Array(FRAME_LEN); p.set(s16); return p;
-    })();
+    const wavB64 = bufToBase64(encodeWAV(s16k, RESAMPLE_SR));
 
-    let bestScore = 0, bestKw = null;
-    const hop = FRAME_LEN >> 1;
+    const res  = await fetch('/api/caterwaul', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ audio: wavB64 }),
+    });
+    const data = await res.json();
 
-    for (let off = 0; off + FRAME_LEN <= padded.length; off += hop) {
-      const frame = padded.slice(off, off + FRAME_LEN);
-      const inp   = tf.tensor1d(frame);
-      const raw   = model.predict(inp);
-
-      const scT   = Array.isArray(raw) ? raw[0] : (raw.scores ?? raw);
-      const sc    = await scT.data();
-      inp.dispose();
-      (Array.isArray(raw) ? raw : [raw]).forEach(t => t.dispose());
-
-      for (const { idx, keyword } of catIndices) {
-        if (sc[idx] > bestScore) { bestScore = sc[idx]; bestKw = keyword; }
-      }
-    }
-
-    if (bestScore >= CAT_THRESHOLD) {
-      showAndSpeak(bestKw, bestScore);
+    if (data.sound && data.sound !== 'none') {
+      showAndSpeak(data.sound, data.meaning, data.science, data.confidence);
     } else {
       setStatus('listening for your cat');
     }
-
   } catch (err) {
-    console.warn('classifyClip:', err);
+    console.warn('translateClip:', err);
     setStatus('listening for your cat');
   }
 
-  classifying = false;
+  busy = false;
 }
 
-// ── Clip end: validate length and hand off to classifier ─────────────────
+// ── Clip end: validate and hand off ──────────────────────────────────────
 function endClip() {
   clearTimeout(silenceTimer);
   silenceTimer = null;
@@ -344,47 +300,14 @@ function endClip() {
   clipBuffer  = [];
 
   if (clip.length < nativeSR * MIN_CLIP_SEC) {
-    // Too brief — background thump, not a vocalisation
     setStatus('listening for your cat');
     return;
   }
 
-  classifyClip(clip, nativeSR);
+  translateClip(clip);
 }
 
-// ── Load YAMNet model + class labels ─────────────────────────────────────
-async function loadModel() {
-  setStatus('loading…');
-
-  const csv = await fetch(
-    'https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv'
-  ).then(r => r.text());
-
-  const labels = csv.trim().split('\n').slice(1).map(row => {
-    const cols = row.split(',');
-    return cols.slice(2).join(',').replace(/^"|"$/g, '').trim();
-  });
-
-  catIndices = labels.flatMap((label, idx) => {
-    const keyword = KEYWORDS.find(k => label.toLowerCase().includes(k.toLowerCase()));
-    return keyword ? [{ idx, keyword }] : [];
-  });
-
-  model = await tf.loadGraphModel(
-    'https://storage.googleapis.com/tfhub-tfjs-modules/google/tfjs-model/yamnet/classification/tfjs/1/model.json'
-  );
-
-  // Warm-up
-  const warmup = tf.zeros([FRAME_LEN]);
-  const wOut   = model.predict(warmup);
-  (Array.isArray(wOut) ? wOut : [wOut]).forEach(t => t.dispose());
-  warmup.dispose();
-
-  modelReady = true;
-  setStatus('ready — press begin');
-}
-
-// ── Microphone capture + onset/offset detection ───────────────────────────
+// ── Microphone + onset/offset detection ──────────────────────────────────
 async function startMic() {
   const stream   = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -399,33 +322,27 @@ async function startMic() {
 
   const proc = audioCtx.createScriptProcessor(4096, 1, 1);
   source.connect(proc);
-
-  // Silent sink — required for onaudioprocess to fire in all browsers
   const sink = audioCtx.createGain();
   sink.gain.value = 0;
   proc.connect(sink);
   sink.connect(audioCtx.destination);
 
-  const PRE_BUF_SAMPLES = Math.ceil(PRE_BUF_SEC * nativeSR);
-  const MAX_CLIP_SAMPLES = Math.ceil(MAX_CLIP_SEC * nativeSR);
+  const PRE_MAX      = Math.ceil(PRE_BUF_SEC * nativeSR);
+  const MAX_SAMPLES  = Math.ceil(MAX_CLIP_SEC * nativeSR);
 
   proc.onaudioprocess = e => {
     const input = Array.from(e.inputBuffer.getChannelData(0));
 
-    // RMS energy of this chunk
+    // RMS energy
     let sum = 0;
     for (const s of input) sum += s * s;
     const rms = Math.sqrt(sum / input.length);
 
     if (!isRecording) {
-      // Keep a rolling pre-onset buffer
       preBuffer.push(...input);
-      if (preBuffer.length > PRE_BUF_SAMPLES) {
-        preBuffer = preBuffer.slice(-PRE_BUF_SAMPLES);
-      }
+      if (preBuffer.length > PRE_MAX) preBuffer = preBuffer.slice(-PRE_MAX);
 
-      if (rms > ONSET_THRESH && !classifying) {
-        // Sound onset — start clip, prepend pre-buffer for clean onset
+      if (rms > ONSET_THRESH && !busy) {
         isRecording = true;
         clipBuffer  = [...preBuffer, ...input];
         preBuffer   = [];
@@ -434,44 +351,29 @@ async function startMic() {
       clipBuffer.push(...input);
 
       if (rms < ONSET_THRESH) {
-        // Sound fading — start silence countdown if not already running
-        if (!silenceTimer) {
-          silenceTimer = setTimeout(endClip, SILENCE_GAP_MS);
-        }
+        if (!silenceTimer) silenceTimer = setTimeout(endClip, SILENCE_GAP_MS);
       } else {
-        // Sound continues — cancel any pending end
         clearTimeout(silenceTimer);
         silenceTimer = null;
       }
 
-      // Hard cap — end the clip if it's grown too long
-      if (clipBuffer.length >= MAX_CLIP_SAMPLES) {
-        endClip();
-      }
+      if (clipBuffer.length >= MAX_SAMPLES) endClip();
     }
   };
 
-  show(sListen);
+  showState(sListen);
   setStatus('listening for your cat');
 }
 
 // ── Begin button ──────────────────────────────────────────────────────────
 document.getElementById('begin-btn').addEventListener('click', async () => {
   try {
-    if (!modelReady) setStatus('loading model…');
-    // Wait for model if still loading
-    while (!modelReady) await new Promise(r => setTimeout(r, 200));
+    setStatus('requesting microphone…', false);
     await startMic();
   } catch (err) {
     console.error(err);
     setStatus('microphone access denied', false);
   }
-});
-
-// ── Boot — load model immediately so it's ready when the user clicks ──────
-loadModel().catch(err => {
-  console.error(err);
-  setStatus('model failed to load', false);
 });
 </script>
 
