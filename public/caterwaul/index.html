@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Caterwaul</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&display=swap">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: #070809;
+      color: #c8c2b8;
+      font-family: 'Cormorant Garamond', serif;
+      overflow: hidden;
+    }
+
+    #back {
+      position: fixed; top: 28px; left: 32px;
+      font-size: 12px; letter-spacing: 0.3em; text-transform: uppercase;
+      color: rgba(200,194,184,0.4); text-decoration: none; z-index: 10;
+      transition: color 0.3s;
+    }
+    #back:hover { color: rgba(200,194,184,0.9); }
+
+    main {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; height: 100vh; padding: 0 40px;
+    }
+
+    h1 {
+      font-size: clamp(3rem, 7vw, 5.5rem); font-weight: 300;
+      letter-spacing: 0.45em; text-transform: uppercase;
+      color: #e8e2da; margin-bottom: 0.45rem;
+    }
+
+    .sub {
+      font-size: 0.90rem; font-style: italic; font-weight: 300;
+      color: rgba(200,194,184,0.38); letter-spacing: 0.06em;
+      margin-bottom: 56px;
+    }
+
+    /* ── waveform ── */
+    #viz {
+      display: block;
+      width: min(600px, 88vw);
+      height: 80px;
+    }
+
+    /* ── translation output ── */
+    #out {
+      margin-top: 52px; text-align: center;
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+      min-height: 148px; justify-content: center;
+      opacity: 0; transform: translateY(10px);
+      transition: opacity 0.85s ease, transform 0.85s ease;
+    }
+    #out.on { opacity: 1; transform: translateY(0); }
+
+    #out-label {
+      font-size: 0.66rem; letter-spacing: 0.42em; text-transform: uppercase;
+      color: rgba(200,194,184,0.32);
+    }
+
+    #out-meaning {
+      font-size: clamp(1.5rem, 3.2vw, 2.2rem); font-style: italic; font-weight: 300;
+      color: #e8e2da; line-height: 1.25;
+    }
+
+    #out-science {
+      font-size: 0.72rem; font-weight: 300; line-height: 1.78;
+      color: rgba(200,194,184,0.30); max-width: 420px; letter-spacing: 0.03em;
+    }
+
+    #conf-bar { width: 90px; height: 1px; background: rgba(200,194,184,0.10); }
+    #conf-fill { height: 100%; width: 0%; background: rgba(200,194,184,0.42); transition: width 0.4s ease; }
+
+    /* ── status ── */
+    #status {
+      position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+      font-size: 0.64rem; letter-spacing: 0.40em; text-transform: uppercase;
+      color: rgba(200,194,184,0.25); white-space: nowrap;
+    }
+    #status.pulse { animation: blink 2.6s ease-in-out infinite; }
+    @keyframes blink { 0%,100%{opacity:0.30} 50%{opacity:0.90} }
+  </style>
+</head>
+<body>
+
+<a href="/" id="back">← Lab</a>
+
+<main>
+  <h1>Caterwaul</h1>
+  <p class="sub">a real-time translator for your cat</p>
+  <canvas id="viz"></canvas>
+  <div id="out">
+    <div id="out-label"></div>
+    <div id="out-meaning"></div>
+    <div id="out-science"></div>
+    <div id="conf-bar"><div id="conf-fill"></div></div>
+  </div>
+</main>
+
+<div id="status" class="pulse">initialising…</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+<script>
+'use strict';
+
+// ── Cat vocalisation science ────────────────────────────────────────────────
+// Sources: Schötz (2013, 2016), McComb et al. (2009), Bradshaw (2013),
+//          Moelk (1944 — first systematic phonetic classification of cat sounds).
+const TRANSLATIONS = {
+  Cat: {
+    label:   'vocalisation',
+    meaning: '"I am here"',
+    science: 'A general cat sound. Intent depends on pitch, duration and context — watch body language for further cues. (Moelk, 1944)',
+  },
+  Purr: {
+    label:   'purr',
+    meaning: '"I feel safe"',
+    science: 'Cats purr at 25–150 Hz. A self-soothing signal also used to solicit care. The solicitation purr embeds a higher-frequency cry that humans find hard to ignore. (McComb et al., 2009)',
+  },
+  Meow: {
+    label:   'meow',
+    meaning: '"I need something"',
+    science: 'Adult cats rarely meow at each other — this sound evolved almost exclusively to communicate with humans. Pitch and duration carry the specific demand. (Bradshaw, 2013)',
+  },
+  Hiss: {
+    label:   'hiss',
+    meaning: '"Back away"',
+    science: 'A defensive warning thought to mimic snake sounds. The cat feels cornered — this is a final caution before escalation. Accompanied by a flattened posture and dilated pupils.',
+  },
+  Caterwaul: {
+    label:   'caterwaul',
+    meaning: '"Stay away from me"',
+    science: 'Used in territorial disputes, mating calls, or intense distress. Females caterwaul during estrus. One of the oldest and most primal cat vocalisations. (Schötz, 2016)',
+  },
+  Chirp: {
+    label:   'chirp / trill',
+    meaning: '"Come here"',
+    science: 'A short rising trill used by mothers to call kittens, and by cats greeting familiar humans. A sign of friendly intent and excitement. (Schötz, 2013)',
+  },
+};
+
+// Keyword priority order — more specific terms checked before 'Cat'
+const KEYWORDS = ['Caterwaul', 'Purr', 'Meow', 'Hiss', 'Chirp', 'Cat'];
+const THRESHOLD  = 0.12; // minimum YAMNet score to trigger translation
+const TARGET_SR  = 16000;
+const FRAME_LEN  = 15600; // 0.975 s at 16 kHz — YAMNet's native window size
+const OVERLAP    = FRAME_LEN >> 1;
+
+// ── State ───────────────────────────────────────────────────────────────────
+let model = null, catIndices = [], classifying = false;
+let sampleBuf = [], keepFrac = 0, fadeTimer = null;
+let analyser  = null;
+let waveHue   = 0; // 0 = cool idle, 1 = warm cat-detected
+
+// ── DOM ──────────────────────────────────────────────────────────────────────
+const canvas    = document.getElementById('viz');
+const statusEl  = document.getElementById('status');
+const outDiv    = document.getElementById('out');
+const outLabel  = document.getElementById('out-label');
+const outMean   = document.getElementById('out-meaning');
+const outSci    = document.getElementById('out-science');
+const confFill  = document.getElementById('conf-fill');
+
+function setStatus(txt, pulse = true) {
+  statusEl.textContent = txt;
+  statusEl.classList.toggle('pulse', pulse);
+}
+
+// ── Canvas resize ─────────────────────────────────────────────────────────
+function resizeCanvas() {
+  const r = devicePixelRatio || 1;
+  canvas.width  = canvas.offsetWidth  * r;
+  canvas.height = canvas.offsetHeight * r;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// ── Waveform draw ─────────────────────────────────────────────────────────
+function drawViz() {
+  requestAnimationFrame(drawViz);
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (!analyser) {
+    // Draw a flat idle line before mic is ready
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(170,162,150,0.18)';
+    ctx.lineWidth   = 1 * (devicePixelRatio || 1);
+    ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2);
+    ctx.stroke();
+    return;
+  }
+
+  const buf = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatTimeDomainData(buf);
+
+  // Interpolate waveform colour toward warm gold when cat is detected
+  waveHue += (outDiv.classList.contains('on') ? 1 : -1) * 0.04;
+  waveHue  = Math.max(0, Math.min(1, waveHue));
+  const alpha = 0.28 + waveHue * 0.55;
+  const r = Math.round(160 + waveHue * 55);
+  const g = Math.round(152 + waveHue * 12);
+  const b = Math.round(142 - waveHue * 52);
+  ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+  ctx.lineWidth   = (1.2 + waveHue * 0.8) * (devicePixelRatio || 1);
+  ctx.lineJoin    = 'round';
+
+  ctx.beginPath();
+  const step = W / (buf.length - 1);
+  for (let i = 0; i < buf.length; i++) {
+    const x = i * step;
+    const y = (buf[i] * 0.65 + 0.5) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+drawViz();
+
+// ── Show translation ──────────────────────────────────────────────────────
+function showTranslation(keyword, score) {
+  const t     = TRANSLATIONS[keyword] || TRANSLATIONS.Cat;
+  outLabel.textContent = t.label;
+  outMean.textContent  = t.meaning;
+  outSci.textContent   = t.science;
+  confFill.style.width = Math.round(score * 100) + '%';
+  outDiv.classList.add('on');
+  setStatus('cat detected', false);
+
+  clearTimeout(fadeTimer);
+  fadeTimer = setTimeout(() => {
+    outDiv.classList.remove('on');
+    setStatus('listening for your cat');
+  }, 5000);
+}
+
+// ── Classify a 16 kHz audio frame via YAMNet ─────────────────────────────
+async function classify(samples) {
+  if (classifying || !model) return;
+  classifying = true;
+  try {
+    const inp = tf.tensor1d(samples);
+    const raw = model.predict(inp);
+
+    // YAMNet returns [scores, embeddings, log_mel_spectrogram]
+    // Handle both array and single-tensor outputs
+    let scoresTensor;
+    if (Array.isArray(raw))                        scoresTensor = raw[0];
+    else if (raw && typeof raw === 'object' && raw.scores) scoresTensor = raw.scores;
+    else                                           scoresTensor = raw;
+
+    const sc = await scoresTensor.data();
+    inp.dispose();
+    (Array.isArray(raw) ? raw : [raw]).forEach(t => t.dispose());
+
+    // Find best-scoring cat-related class
+    let best = 0, bestKw = null;
+    for (const { idx, keyword } of catIndices) {
+      if (sc[idx] > best) { best = sc[idx]; bestKw = keyword; }
+    }
+
+    // Only trigger if score is competitive (not drowned out by loud background)
+    if (best >= THRESHOLD) {
+      // Secondary check: cat class must be in the top-8 overall predictions
+      const top8 = new Set(
+        [...sc].map((v, i) => ({ v, i }))
+               .sort((a, b) => b.v - a.v)
+               .slice(0, 8)
+               .map(s => s.i)
+      );
+      if (catIndices.some(({ idx }) => top8.has(idx) && sc[idx] === best)) {
+        showTranslation(bestKw, best);
+      }
+    }
+  } catch (err) {
+    console.warn('classify:', err);
+  }
+  classifying = false;
+}
+
+// ── Load YAMNet model + class labels ─────────────────────────────────────
+async function loadModel() {
+  setStatus('loading sound model…');
+
+  // Fetch YAMNet's 521-class label map from AudioSet
+  const csv = await fetch(
+    'https://raw.githubusercontent.com/tensorflow/models/master/research/audioset/yamnet/yamnet_class_map.csv'
+  ).then(r => r.text());
+
+  const labels = csv.trim().split('\n').slice(1).map(row => {
+    // format: index,mid,display_name  — display_name may be quoted
+    const cols = row.split(',');
+    return cols.slice(2).join(',').replace(/^"|"$/g, '').trim();
+  });
+
+  // Map each cat-related label to its keyword (specific terms win over 'Cat')
+  catIndices = labels.flatMap((label, idx) => {
+    const keyword = KEYWORDS.find(k => label.toLowerCase().includes(k.toLowerCase()));
+    return keyword ? [{ idx, keyword }] : [];
+  });
+
+  // Load YAMNet graph model (converted from TF Hub SavedModel)
+  model = await tf.loadGraphModel(
+    'https://storage.googleapis.com/tfhub-tfjs-modules/google/tfjs-model/yamnet/classification/tfjs/1/model.json'
+  );
+
+  // Warm-up pass to compile GPU kernels before first real classification
+  const warmup = tf.zeros([FRAME_LEN]);
+  const wOut   = model.predict(warmup);
+  (Array.isArray(wOut) ? wOut : [wOut]).forEach(t => t.dispose());
+  warmup.dispose();
+}
+
+// ── Microphone capture ────────────────────────────────────────────────────
+async function startMic() {
+  setStatus('requesting microphone…');
+  const stream   = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const source   = audioCtx.createMediaStreamSource(stream);
+
+  // Analyser feeds the waveform visualisation only
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.82;
+  source.connect(analyser);
+
+  // ScriptProcessor captures raw samples for classification
+  const nativeSR = audioCtx.sampleRate;
+  const ratio    = nativeSR / TARGET_SR; // source samples per 16 kHz sample
+
+  const proc = audioCtx.createScriptProcessor(4096, 1, 1);
+  source.connect(proc);
+
+  // Route to a silent sink — required to keep onaudioprocess firing
+  const sink = audioCtx.createGain();
+  sink.gain.value = 0;
+  proc.connect(sink);
+  sink.connect(audioCtx.destination);
+
+  proc.onaudioprocess = e => {
+    const input = e.inputBuffer.getChannelData(0);
+    // Downsample to TARGET_SR via integer-fractional decimation
+    for (let i = 0; i < input.length; i++) {
+      keepFrac += 1;
+      if (keepFrac >= ratio) {
+        sampleBuf.push(input[i]);
+        keepFrac -= ratio;
+      }
+    }
+    // Classify when we have a full frame; keep second half for 50% overlap
+    if (sampleBuf.length >= FRAME_LEN) {
+      classify(new Float32Array(sampleBuf.slice(0, FRAME_LEN)));
+      sampleBuf = sampleBuf.slice(OVERLAP);
+    }
+  };
+
+  setStatus('listening for your cat');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+async function boot() {
+  try {
+    await loadModel();
+    await startMic();
+  } catch (err) {
+    console.error(err);
+    setStatus('could not start — ' + (err.message || err), false);
+  }
+}
+boot();
+</script>
+
+</body>
+</html>
