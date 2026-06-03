@@ -177,7 +177,7 @@ const catLimiter = rateLimit({
   message: { error: "too many requests — please wait a moment" },
 });
 
-const catModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const catModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
 app.post("/api/caterwaul", catLimiter, async (req, res) => {
   try {
@@ -210,8 +210,8 @@ Return only valid JSON, no other text.`
       res.json({ sound: "none" });
     }
   } catch (err) {
-    console.error("/api/caterwaul:", err.message);
-    res.status(500).json({ sound: "none" });
+    console.error("/api/caterwaul:", err);
+    res.status(500).json({ sound: "none", error: err.message });
   }
 });
 

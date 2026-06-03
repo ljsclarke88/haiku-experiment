@@ -222,8 +222,11 @@ function encodeWAV(f32, sr) {
 
 function bufToBase64(buf) {
   const bytes = new Uint8Array(buf);
+  const CHUNK = 8192;
   let out = '';
-  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    out += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+  }
   return btoa(out);
 }
 
@@ -320,35 +323,38 @@ async function startMic() {
   analyser.smoothingTimeConstant = 0.82;
   source.connect(analyser);
 
-  const proc = audioCtx.createScriptProcessor(4096, 1, 1);
-  source.connect(proc);
+  // AudioWorklet — non-deprecated replacement for ScriptProcessorNode
+  await audioCtx.audioWorklet.addModule('./audio-processor.js');
+  const worklet = new AudioWorkletNode(audioCtx, 'cat-processor');
+  source.connect(worklet);
   const sink = audioCtx.createGain();
   sink.gain.value = 0;
-  proc.connect(sink);
+  worklet.connect(sink);
   sink.connect(audioCtx.destination);
 
-  const PRE_MAX      = Math.ceil(PRE_BUF_SEC * nativeSR);
-  const MAX_SAMPLES  = Math.ceil(MAX_CLIP_SEC * nativeSR);
+  const PRE_MAX     = Math.ceil(PRE_BUF_SEC * nativeSR);
+  const MAX_SAMPLES = Math.ceil(MAX_CLIP_SEC * nativeSR);
 
-  proc.onaudioprocess = e => {
-    const input = Array.from(e.inputBuffer.getChannelData(0));
+  worklet.port.onmessage = e => {
+    const chunk = e.data; // Float32Array of 4096 samples
 
-    // RMS energy
+    // RMS energy of this chunk
     let sum = 0;
-    for (const s of input) sum += s * s;
-    const rms = Math.sqrt(sum / input.length);
+    for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+    const rms = Math.sqrt(sum / chunk.length);
 
     if (!isRecording) {
-      preBuffer.push(...input);
+      for (let i = 0; i < chunk.length; i++) preBuffer.push(chunk[i]);
       if (preBuffer.length > PRE_MAX) preBuffer = preBuffer.slice(-PRE_MAX);
 
       if (rms > ONSET_THRESH && !busy) {
         isRecording = true;
-        clipBuffer  = [...preBuffer, ...input];
+        clipBuffer  = [...preBuffer];
+        for (let i = 0; i < chunk.length; i++) clipBuffer.push(chunk[i]);
         preBuffer   = [];
       }
     } else {
-      clipBuffer.push(...input);
+      for (let i = 0; i < chunk.length; i++) clipBuffer.push(chunk[i]);
 
       if (rms < ONSET_THRESH) {
         if (!silenceTimer) silenceTimer = setTimeout(endClip, SILENCE_GAP_MS);
